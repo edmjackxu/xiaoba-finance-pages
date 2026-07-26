@@ -215,6 +215,9 @@
             chart = null;
         }
 
+        // Clear placeholder before creating chart
+        chartContainer.innerHTML = '';
+
         const chartOptions = {
             layout: {
                 background: { type: 'solid', color: '#ffffff' },
@@ -253,20 +256,16 @@
             scaleMargins: { top: 0.05, bottom: 0.25 },
         });
 
-        // 成交量柱状图系列（使用单独的价格刻度）
+        // 成交量柱状图系列（使用 overlay 刻度）
         volumeSeries = chart.addHistogramSeries({
             color: '#26a69a',
             priceFormat: { type: 'volume' },
-            priceScaleId: '', // 使用 overlay 刻度
+            priceScaleId: '',
         });
 
         volumeSeries.priceScale().applyOptions({
             scaleMargins: { top: 0.8, bottom: 0 },
         });
-
-        // 清除 placeholder
-        chartContainer.innerHTML = '';
-        chartContainer.appendChild(chart.chartElement);
     }
 
     function renderChart(data) {
