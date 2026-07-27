@@ -12,10 +12,11 @@
     const DB_URL = 'db/xiaoba-finance-optimized.db';
     const WORKER_URL = 'sqlite.worker.js';
     const WASM_URL = 'sql-wasm.wasm';
-    const MAX_BYTES_TO_READ = 10 * 1024 * 1024; // 10MB
+    const MAX_BYTES_TO_READ = Infinity;
 
     // ========== DOM 元素 ==========
     const stockSelect = document.getElementById('stock-select');
+    const periodSelect = document.getElementById('period-select');
     const startDateInput = document.getElementById('start-date');
     const endDateInput = document.getElementById('end-date');
     const queryBtn = document.getElementById('query-btn');
@@ -122,10 +123,17 @@
     }
 
     // ========== 查询逻辑 ==========
-    async function queryData(market, code, startDate, endDate) {
+    async function queryData(market, code, startDate, endDate, period) {
         const worker = await initDbWorker();
 
-        const sql = `SELECT * FROM stock_daily WHERE market = ? AND code = ? AND date BETWEEN ? AND ? ORDER BY date`;
+        const tableMap = {
+            daily: 'stock_daily',
+            weekly: 'stock_weekly',
+            monthly: 'stock_monthly'
+        };
+        const tableName = tableMap[period] || 'stock_daily';
+
+        const sql = `SELECT * FROM ${tableName} WHERE market = ? AND code = ? AND date BETWEEN ? AND ? ORDER BY date`;
         const result = await worker.db.exec(sql, [market, code, startDate + ' 00:00:00', endDate + ' 00:00:00']);
 
         if (!result || result.length === 0) {
@@ -136,13 +144,22 @@
         const columns = result[0].columns;
 
         // 转换为对象数组
-        return rows.map(row => {
+        const data = rows.map(row => {
             const obj = {};
             columns.forEach((col, i) => {
                 obj[col] = row[i];
             });
             return obj;
         });
+
+        // 自动计算 pct_change 为 null 的记录
+        for (let i = 1; i < data.length; i++) {
+            if (data[i].pct_change == null && data[i - 1].close != null && data[i].close != null) {
+                data[i].pct_change = (data[i].close - data[i - 1].close) / data[i - 1].close;
+            }
+        }
+
+        return data;
     }
 
     // ========== 输入校验 ==========
@@ -167,7 +184,8 @@
         }
 
         const [market, code] = stockValue.split('|');
-        return { market, code, startDate, endDate };
+        const period = periodSelect.value;
+        return { market, code, startDate, endDate, period };
     }
 
     // ========== 执行查询 ==========
@@ -183,7 +201,13 @@
         setStatus('info', '正在查询数据...', true);
 
         try {
-            const data = await queryData(params.market, params.code, params.startDate, params.endDate);
+            // 30 秒查询超时
+            const queryPromise = queryData(params.market, params.code, params.startDate, params.endDate, params.period);
+            const timeoutPromise = new Promise((_, reject) => {
+                setTimeout(() => reject(new Error('TIMEOUT')), 30000);
+            });
+
+            const data = await Promise.race([queryPromise, timeoutPromise]);
 
             if (data.length === 0) {
                 setStatus('empty', '未找到该股票在选定日期范围内的数据');
@@ -197,8 +221,13 @@
             setStatus('success', `✅ 查询完成，共 ${data.length} 条记录`);
 
         } catch (err) {
-            console.error('查询失败:', err);
-            setStatus('error', `❌ 查询失败: ${err.message || '未知错误'}`);
+            if (err.message === 'TIMEOUT') {
+                console.error('查询超时');
+                setStatus('error', '⏱️ 查询超时，请重试');
+            } else {
+                console.error('查询失败:', err);
+                setStatus('error', `❌ 查询失败: ${err.message || '未知错误'}`);
+            }
             clearChart();
             renderTable([]);
         } finally {
@@ -314,6 +343,13 @@
         chartContainer.innerHTML = '<div class="chart-placeholder">请选择股票和日期范围后点击查询</div>';
     }
 
+    // ========== HTML 转义（XSS 防护） ==========
+    function escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = String(str);
+        return div.innerHTML;
+    }
+
     // ========== 表格渲染 ==========
     function renderTable(data) {
         if (data.length === 0) {
@@ -354,13 +390,13 @@
             };
 
             return `<tr>
-                <td>${dateStr}</td>
-                <td>${fmt(row.open)}</td>
-                <td>${fmt(row.close)}</td>
-                <td>${fmt(row.high)}</td>
-                <td>${fmt(row.low)}</td>
-                <td>${fmtVol(row.volume)}</td>
-                <td class="${pctClass}">${pctText}</td>
+                <td>${escapeHtml(dateStr)}</td>
+                <td>${escapeHtml(fmt(row.open))}</td>
+                <td>${escapeHtml(fmt(row.close))}</td>
+                <td>${escapeHtml(fmt(row.high))}</td>
+                <td>${escapeHtml(fmt(row.low))}</td>
+                <td>${escapeHtml(fmtVol(row.volume))}</td>
+                <td class="${pctClass}">${escapeHtml(pctText)}</td>
             </tr>`;
         }).join('');
     }
@@ -369,7 +405,7 @@
     queryBtn.addEventListener('click', executeQuery);
 
     // 回车键触发查询
-    [stockSelect, startDateInput, endDateInput].forEach(el => {
+    [stockSelect, periodSelect, startDateInput, endDateInput].forEach(el => {
         el.addEventListener('keydown', (e) => {
             if (e.key === 'Enter') executeQuery();
         });
